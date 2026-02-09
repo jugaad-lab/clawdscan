@@ -812,6 +812,143 @@ def cmd_disk(args):
     print()
 
 
+def cmd_history(args):
+    """Display session health trends over time."""
+    base_dir = Path(args.dir) if args.dir else find_clawdbot_dir()
+    agents = discover_agents(base_dir)
+    
+    days = args.days
+    now = datetime.now(timezone.utc)
+    start_date = now - timedelta(days=days)
+
+    print(C.bold(f"\n📈 Session Health Trends (Last {days} Days)\n"))
+    
+    # Collect all sessions across agents
+    all_sessions = []
+    for agent in agents:
+        sessions = scan_sessions(agent["sessions_dir"])
+        for session_file in sessions:
+            if ".deleted." in session_file.name:
+                continue
+            try:
+                created = datetime.fromtimestamp(session_file.stat().st_mtime, timezone.utc)
+                if created >= start_date:
+                    size = session_file.stat().st_size
+                    # Count messages by reading file
+                    message_count = 0
+                    try:
+                        with open(session_file, 'r') as f:
+                            for line in f:
+                                if line.strip():
+                                    message_count += 1
+                    except:
+                        message_count = 0
+                    
+                    all_sessions.append({
+                        'file': session_file,
+                        'created': created,
+                        'size': size,
+                        'messages': message_count,
+                        'agent': agent['name']
+                    })
+            except Exception:
+                continue
+    
+    if not all_sessions:
+        print("No sessions found in the specified time range.")
+        return
+    
+    # Group sessions by week
+    history_data = {}
+    
+    for session in all_sessions:
+        created_date = session['created']
+        days_from_start = (created_date - start_date).days
+        week_num = days_from_start // 7
+        week_key = f"Week {week_num + 1}"
+        
+        if week_key not in history_data:
+            history_data[week_key] = {
+                'sessions': [],
+                'total_size': 0,
+                'bloated': 0,
+                'zombies': 0,
+                'date_range': None
+            }
+        
+        history_data[week_key]['sessions'].append(session)
+        history_data[week_key]['total_size'] += session['size']
+        
+        # Check for bloated sessions
+        if session['size'] > BLOAT_SIZE_BYTES or session['messages'] > BLOAT_MSG_COUNT:
+            history_data[week_key]['bloated'] += 1
+        
+        # Check for zombie sessions (very few messages)
+        if session['messages'] <= 2:
+            history_data[week_key]['zombies'] += 1
+
+    # Calculate date ranges for each week
+    for week_key, data in history_data.items():
+        week_num = int(week_key.split()[1]) - 1
+        week_start = start_date + timedelta(days=week_num * 7)
+        week_end = min(week_start + timedelta(days=6), now)
+        data['date_range'] = f"{week_start.strftime('%b %d')}-{week_end.strftime('%d')}"
+
+    prev_sessions = 0
+    prev_size = 0
+
+    for week_key in sorted(history_data.keys(), key=lambda x: int(x.split()[1])):
+        data = history_data[week_key]
+        session_count = len(data['sessions'])
+        total_size = data['total_size']
+        
+        # Calculate growth
+        if prev_sessions > 0:
+            session_growth = ((session_count - prev_sessions) / prev_sessions) * 100
+            size_growth = ((total_size - prev_size) / prev_size) * 100 if prev_size > 0 else 0
+            growth_indicator = "📈" if session_growth > 10 else "📊" if session_growth > 0 else "📉"
+            print(f"{week_key} ({data['date_range']}): {session_count:3d} sessions, {fmt_size(total_size):>8s} "
+                  f"{growth_indicator} {session_growth:+.0f}% sessions, {size_growth:+.0f}% size")
+        else:
+            print(f"{week_key} ({data['date_range']}): {session_count:3d} sessions, {fmt_size(total_size):>8s}")
+        
+        prev_sessions = session_count
+        prev_size = total_size
+
+    # Show issue trends
+    print(f"\n{C.bold('🔥 Issue Trends:')}")
+    bloat_counts = []
+    zombie_counts = []
+    
+    for week_key in sorted(history_data.keys(), key=lambda x: int(x.split()[1])):
+        data = history_data[week_key]
+        bloat_counts.append(str(data['bloated']))
+        zombie_counts.append(str(data['zombies']))
+    
+    print(f"Bloated Sessions: {' → '.join(bloat_counts)}")
+    print(f"Zombie Sessions:  {' → '.join(zombie_counts)}")
+
+    # Calculate overall growth rate
+    if len(history_data) > 1:
+        first_week = list(history_data.values())[0]
+        last_week = list(history_data.values())[-1]
+        
+        weeks = len(history_data)
+        if len(first_week['sessions']) > 0:
+            session_growth_rate = ((len(last_week['sessions']) / len(first_week['sessions'])) ** (1/weeks) - 1) * 100
+        else:
+            session_growth_rate = 0
+            
+        if first_week['total_size'] > 0:
+            size_growth_rate = ((last_week['total_size'] / first_week['total_size']) ** (1/weeks) - 1) * 100
+        else:
+            size_growth_rate = 0
+        
+        print(f"\n{C.bold('💡 Growth Rate:')} {session_growth_rate:+.0f}% sessions/week, {size_growth_rate:+.0f}% storage/week")
+
+    print()
+
+
 def parse_size(s: str) -> int:
     """Parse size string like '5M', '100K', '1G'."""
     s = s.strip().upper()
@@ -843,6 +980,8 @@ Examples:
   clawdscan clean --zombies         Preview zombie cleanup
   clawdscan clean --zombies --execute  Execute zombie cleanup
   clawdscan clean --stale-days 28   Clean sessions inactive >28 days
+  clawdscan history                 View session health trends (last 30 days)
+  clawdscan history --days 7        View trends for last week
         """,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -905,6 +1044,12 @@ Examples:
     p_clean.add_argument("--execute", dest="dry_run", action="store_false", default=True,
                          help="Actually move files (default: dry-run)")
     p_clean.set_defaults(func=cmd_clean)
+
+    # history
+    p_history = subparsers.add_parser("history", help="View session health trends over time")
+    p_history.add_argument("--dir", **dir_kwargs)
+    p_history.add_argument("--days", type=int, default=30, help="Number of days of history (default: 30)")
+    p_history.set_defaults(func=cmd_history)
 
     args = parser.parse_args()
 
