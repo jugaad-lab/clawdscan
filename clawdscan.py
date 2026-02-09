@@ -132,7 +132,7 @@ def analyze_session(filepath: Path) -> dict:
                         stats["user_messages"] += 1
                     elif role == "assistant":
                         stats["assistant_messages"] += 1
-                        # Count tool calls in content
+                        # Count tool calls in assistant content blocks
                         content = msg.get("content", [])
                         if isinstance(content, list):
                             for block in content:
@@ -141,6 +141,11 @@ def analyze_session(filepath: Path) -> dict:
                                         stats["tool_calls"] += 1
                                         tool_name = block.get("name", "unknown")
                                         stats["tools_used"][tool_name] += 1
+                    elif role == "toolResult":
+                        # Clawdbot stores tool results as separate message entries
+                        stats["tool_calls"] += 1
+                        tool_name = msg.get("toolName", "unknown")
+                        stats["tools_used"][tool_name] += 1
 
                 elif entry_type == "compaction":
                     stats["compactions"] += 1
@@ -581,8 +586,10 @@ def cmd_inspect(args):
 
     if stats["tools_used"]:
         print(C.bold("  Tool Usage (top 10)"))
-        for tool, count in stats["tools_used"].most_common(10):
-            bar_len = min(count, 50)
+        top_tools = stats["tools_used"].most_common(10)
+        max_tool_count = top_tools[0][1] if top_tools else 1
+        for tool, count in top_tools:
+            bar_len = max(1, int(40 * count / max_tool_count))
             bar = "█" * bar_len
             print(f"    {tool:30s} {count:>5}  {C.cyan(bar)}")
         print()
