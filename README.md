@@ -2,6 +2,9 @@
   <img src="assets/logo.png" alt="clawdscan logo" width="200" />
 </p>
 
+<p align="center">[![ClawHub](https://img.shields.io/badge/ClawHub-clawdscan-teal)](https://clawhub.ai/skills/clawdscan)</p>
+<p align="center">**Install via ClawHub:** `clawhub install clawdscan`</p>
+
 # ClawdScan - Clawdbot Session Health Analyzer 🔍
 
 A comprehensive diagnostic tool for Clawdbot sessions. Analyze JSONL session files to identify performance issues, bloated sessions, zombie processes, and get actionable cleanup recommendations.
