@@ -441,7 +441,7 @@ def cmd_scan(args):
                 print(f"     • {sid} ({fmt_size(s['size_bytes'])}, {s['messages']} msgs)")
             if len(red_issues) > 5:
                 print(f"     ... and {len(red_issues) - 5} more")
-            print(f"\n     Fix: clawdscan archive --agent {red_issues[0]['agent']} --min-size 5M")
+            print(f"\n     Fix: clawdscan clean --min-size 5M --agent {red_issues[0]['agent']}")
 
         if zombie_issues:
             print(f"\n  👻 ZOMBIES — Safe to remove:")
@@ -452,7 +452,7 @@ def cmd_scan(args):
         if stale_sessions:
             print(f"\n  🟡 ANCIENT — Consider archiving:")
             print(f"     {len(stale_sessions)} sessions with no activity for {STALE_DAYS * 4}+ days")
-            print(f"     Fix: clawdscan archive --stale-days {STALE_DAYS * 4}")
+            print(f"     Fix: clawdscan clean --stale-days {STALE_DAYS * 4}")
 
         print()
 
@@ -850,8 +850,12 @@ Examples:
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
+    # Common --dir argument for all subcommands
+    dir_kwargs = {"help": "Clawdbot config directory (default: ~/.clawdbot or ~/.openclaw)"}
+
     # scan
     p_scan = subparsers.add_parser("scan", help="Full health scan")
+    p_scan.add_argument("--dir", **dir_kwargs)
     p_scan.add_argument("--agent", help="Filter to specific agent")
     p_scan.add_argument("--top", type=int, default=LARGE_SESSION_TOP_N, help="Show top N issues per agent")
     p_scan.add_argument("--include-deleted", action="store_true", help="Include soft-deleted sessions")
@@ -861,6 +865,7 @@ Examples:
 
     # top
     p_top = subparsers.add_parser("top", help="Top sessions by size or messages")
+    p_top.add_argument("--dir", **dir_kwargs)
     p_top.add_argument("-n", "--count", type=int, default=LARGE_SESSION_TOP_N, help="Number of sessions")
     p_top.add_argument("--sort", choices=["size", "messages"], default="size", help="Sort by")
     p_top.add_argument("--agent", help="Filter to specific agent")
@@ -868,26 +873,31 @@ Examples:
 
     # inspect
     p_inspect = subparsers.add_parser("inspect", help="Deep-inspect a session")
+    p_inspect.add_argument("--dir", **dir_kwargs)
     p_inspect.add_argument("session_id", help="Session ID (first 8+ chars)")
     p_inspect.set_defaults(func=cmd_inspect)
 
     # tools
     p_tools = subparsers.add_parser("tools", help="Aggregate tool usage")
+    p_tools.add_argument("--dir", **dir_kwargs)
     p_tools.add_argument("--agent", help="Filter to specific agent")
     p_tools.add_argument("-n", "--count", type=int, default=30, help="Top N tools")
     p_tools.set_defaults(func=cmd_tools)
 
     # models
     p_models = subparsers.add_parser("models", help="Model usage patterns")
+    p_models.add_argument("--dir", **dir_kwargs)
     p_models.add_argument("--agent", help="Filter to specific agent")
     p_models.set_defaults(func=cmd_models)
 
     # disk
     p_disk = subparsers.add_parser("disk", help="Disk usage breakdown")
+    p_disk.add_argument("--dir", **dir_kwargs)
     p_disk.set_defaults(func=cmd_disk)
 
     # clean
     p_clean = subparsers.add_parser("clean", help="Clean up sessions")
+    p_clean.add_argument("--dir", **dir_kwargs)
     p_clean.add_argument("--agent", help="Filter to specific agent")
     p_clean.add_argument("--zombies", action="store_true", help="Clean zombie sessions (≤2 msgs, >48h)")
     p_clean.add_argument("--stale-days", type=int, help="Clean sessions inactive for N+ days")
