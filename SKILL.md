@@ -1,8 +1,19 @@
-# ClawdScan - Clawdbot Session Health Analyzer
+---
+name: clawdscan
+description: "Diagnose Clawdbot/OpenClaw session health — find bloated sessions, zombies, stale files, and reclaim disk space. Zero dependencies, single Python file."
+user-invocable: true
+metadata:
+  openclaw:
+    emoji: "🔍"
+    requires:
+      bins: ["python3"]
+---
+
+# ClawdScan — Session Health Analyzer
 
 > 🔍 Diagnose bloat, find zombies, reclaim disk space
 
-ClawdScan is a comprehensive diagnostic tool for Clawdbot sessions. It analyzes JSONL session files to identify performance issues, bloated sessions, zombie processes, and provides actionable cleanup recommendations.
+ClawdScan is a zero-dependency Python CLI that analyzes Clawdbot/OpenClaw session JSONL files to identify bloated sessions, zombies, stale files, and provides actionable cleanup recommendations.
 
 ## Features
 
@@ -328,6 +339,5 @@ MIT License - see LICENSE file for details.
 
 ## Support
 
-- GitHub Issues: [Report bugs or request features](https://github.com/yajatns/clawdscan/issues)
+- GitHub Issues: [Report bugs or request features](https://github.com/jugaad-lab/clawdscan/issues)
 - Documentation: This file and `clawdscan.py --help`
-- Community: Clawdbot Discord server
