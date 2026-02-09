@@ -23,19 +23,60 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 
 DEFAULT_CLAWDBOT_DIR = Path.home() / ".clawdbot"
 OPENCLAW_DIR = Path.home() / ".openclaw"
+RC_FILE = Path.home() / ".clawdscanrc"
 
-# Thresholds
+# Thresholds (overridable via ~/.clawdscanrc)
 BLOAT_SIZE_BYTES = 1 * 1024 * 1024       # 1 MB
 BLOAT_MSG_COUNT = 300                     # messages
 STALE_DAYS = 7                            # days without activity
 ZOMBIE_HOURS = 48                         # hours: created but never got messages
 LARGE_SESSION_TOP_N = 15                  # top N in reports
+
+
+def load_rc_config() -> dict:
+    """Load thresholds from ~/.clawdscanrc (JSON) if it exists.
+
+    Supported keys:
+      bloat_size_bytes, bloat_size (human e.g. "2M"),
+      bloat_msg_count, stale_days, zombie_hours, top_n,
+      clawdbot_dir
+    """
+    rc = {}
+    for candidate in (RC_FILE, Path(".clawdscanrc")):
+        if candidate.exists():
+            try:
+                with open(candidate) as f:
+                    rc = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+            break
+    return rc
+
+
+def apply_rc_config():
+    """Apply ~/.clawdscanrc overrides to module-level thresholds."""
+    global BLOAT_SIZE_BYTES, BLOAT_MSG_COUNT, STALE_DAYS, ZOMBIE_HOURS, LARGE_SESSION_TOP_N
+    rc = load_rc_config()
+    if not rc:
+        return
+    if "bloat_size" in rc:
+        BLOAT_SIZE_BYTES = parse_size(str(rc["bloat_size"]))
+    if "bloat_size_bytes" in rc:
+        BLOAT_SIZE_BYTES = int(rc["bloat_size_bytes"])
+    if "bloat_msg_count" in rc:
+        BLOAT_MSG_COUNT = int(rc["bloat_msg_count"])
+    if "stale_days" in rc:
+        STALE_DAYS = int(rc["stale_days"])
+    if "zombie_hours" in rc:
+        ZOMBIE_HOURS = int(rc["zombie_hours"])
+    if "top_n" in rc:
+        LARGE_SESSION_TOP_N = int(rc["top_n"])
 
 # Colors
 class C:
@@ -257,6 +298,19 @@ def fmt_age(dt: Optional[datetime], now: datetime) -> str:
         return "just now"
 
 
+def fmt_compaction_efficiency(size_bytes: int, compactions: int) -> str:
+    """Show size-per-compaction ratio to indicate compaction effectiveness."""
+    if compactions <= 0:
+        return "no compactions"
+    ratio = size_bytes / compactions
+    verdict = ""
+    if size_bytes > BLOAT_SIZE_BYTES and compactions > 5:
+        verdict = C.red(" (compaction not helping)")
+    elif size_bytes > BLOAT_SIZE_BYTES and compactions > 2:
+        verdict = C.yellow(" (consider restart)")
+    return f"{fmt_size(int(ratio))}/compaction{verdict}"
+
+
 def fmt_duration(dt_start: Optional[datetime], dt_end: Optional[datetime]) -> str:
     """Human-readable session duration."""
     if not dt_start or not dt_end:
@@ -379,17 +433,21 @@ def cmd_scan(args):
                 duration = fmt_duration(s["first_timestamp"], s["last_timestamp"])
                 models = ", ".join(s["models_used"][:2]) if s["models_used"] else "unknown"
 
+                # Use session label as primary identifier when available
+                display_name = C.cyan(s["label"]) if s.get("label") else C.dim(sid)
+
                 # Color the size
                 if s["size_bytes"] > BLOAT_SIZE_BYTES * 5:
                     size = C.red(size)
                 elif s["size_bytes"] > BLOAT_SIZE_BYTES:
                     size = C.yellow(size)
 
-                print(f"   {C.dim(sid)}  {size:>12}  {msgs:>5} msgs  {age:>10}  {label_str}")
+                print(f"   {display_name:>20}  {size:>12}  {msgs:>5} msgs  {age:>10}  {label_str}")
                 if s.get("label"):
-                    print(f"   {'':12}  label: {C.cyan(s['label'])}")
+                    print(f"   {'':20}  id: {C.dim(sid)}")
                 if s["compactions"] > 0:
-                    print(f"   {'':12}  compactions: {s['compactions']}, duration: {duration}, models: {models}")
+                    eff = fmt_compaction_efficiency(s["size_bytes"], s["compactions"])
+                    print(f"   {'':20}  compactions: {s['compactions']}, {eff}, duration: {duration}, models: {models}")
         else:
             print(f"   ✅ All sessions healthy\n")
 
@@ -507,13 +565,16 @@ def cmd_top(args):
 
     n = args.count
     print(C.bold(f"\n🏆 Top {n} sessions by {args.sort}\n"))
-    print(f"  {'#':>3}  {'Agent':8}  {'Session ID':12}  {'Size':>10}  {'Msgs':>6}  {'User':>5}  "
+    print(f"  {'#':>3}  {'Agent':8}  {'Label/Session':20}  {'Size':>10}  {'Msgs':>6}  {'User':>5}  "
           f"{'Tools':>5}  {'Compact':>7}  {'Last Active':>12}  Labels")
-    print(f"  {'─' * 3}  {'─' * 8}  {'─' * 12}  {'─' * 10}  {'─' * 6}  {'─' * 5}  "
+    print(f"  {'─' * 3}  {'─' * 8}  {'─' * 20}  {'─' * 10}  {'─' * 6}  {'─' * 5}  "
           f"{'─' * 5}  {'─' * 7}  {'─' * 12}  {'─' * 20}")
 
     for i, s in enumerate(all_stats[:n], 1):
         sid = s["session_id"][:12]
+        display_name = s.get("label", sid) or sid
+        if len(display_name) > 20:
+            display_name = display_name[:17] + "..."
         size = fmt_size(s["size_bytes"])
         labels = " ".join(s["labels"])
 
@@ -522,7 +583,7 @@ def cmd_top(args):
         elif s["size_bytes"] > BLOAT_SIZE_BYTES:
             size = C.yellow(size)
 
-        print(f"  {i:>3}  {s['agent']:8}  {sid:12}  {size:>10}  {s['messages']:>6}  "
+        print(f"  {i:>3}  {s['agent']:8}  {display_name:20}  {size:>10}  {s['messages']:>6}  "
               f"{s['user_messages']:>5}  {s['tool_calls']:>5}  {s['compactions']:>7}  "
               f"{fmt_age(s['last_timestamp'], now):>12}  {labels}")
 
@@ -582,6 +643,8 @@ def cmd_inspect(args):
     if stats["compactions"]:
         print(C.bold("  Compaction"))
         print(f"    Count: {stats['compactions']}")
+        eff = fmt_compaction_efficiency(stats["size_bytes"], stats["compactions"])
+        print(f"    Efficiency: {eff}")
         print()
 
     if stats["tools_used"]:
@@ -949,6 +1012,62 @@ def cmd_history(args):
     print()
 
 
+def cmd_watch(args):
+    """Watch sessions directory and alert when thresholds are crossed."""
+    import time
+
+    base_dir = Path(args.dir) if args.dir else find_clawdbot_dir()
+    interval = args.interval
+
+    print(C.bold(f"\n👁️  clawdscan watch — monitoring {base_dir}"))
+    print(C.dim(f"   Interval: {interval}s | Ctrl+C to stop"))
+    print(C.dim(f"   Thresholds: size>{fmt_size(BLOAT_SIZE_BYTES)}, msgs>{BLOAT_MSG_COUNT}\n"))
+
+    prev_issues = set()
+
+    try:
+        while True:
+            now = datetime.now(timezone.utc)
+            agents = discover_agents(base_dir)
+            current_issues = set()
+            new_alerts = []
+
+            for agent in agents:
+                sessions = scan_sessions(agent["sessions_dir"])
+                for session_file in sessions:
+                    stats = analyze_session(session_file)
+                    labels = classify_session(stats, now)
+
+                    if not all(l.startswith("✅") for l in labels):
+                        issue_key = stats["session_id"]
+                        current_issues.add(issue_key)
+
+                        if issue_key not in prev_issues:
+                            display = stats.get("label") or stats["session_id"][:12]
+                            new_alerts.append(
+                                f"  ⚡ NEW: {display} ({agent['name']}) — "
+                                f"{fmt_size(stats['size_bytes'])}, {stats['messages']} msgs — "
+                                f"{' '.join(labels)}"
+                            )
+
+            if new_alerts:
+                ts = now.strftime("%H:%M:%S")
+                print(f"\n[{ts}] {C.yellow(f'{len(new_alerts)} new issue(s)')}")
+                for a in new_alerts:
+                    print(a)
+            else:
+                # Quiet tick
+                ts = now.strftime("%H:%M:%S")
+                total_issues = len(current_issues)
+                print(f"[{ts}] ✅ {total_issues} tracked issues, 0 new", end="\r")
+
+            prev_issues = current_issues
+            time.sleep(interval)
+
+    except KeyboardInterrupt:
+        print(f"\n\n👋 Watch stopped.")
+
+
 def parse_size(s: str) -> int:
     """Parse size string like '5M', '100K', '1G'."""
     s = s.strip().upper()
@@ -1051,11 +1170,20 @@ Examples:
     p_history.add_argument("--days", type=int, default=30, help="Number of days of history (default: 30)")
     p_history.set_defaults(func=cmd_history)
 
+    # watch
+    p_watch = subparsers.add_parser("watch", help="Watch sessions and alert on threshold crossings")
+    p_watch.add_argument("--dir", **dir_kwargs)
+    p_watch.add_argument("--interval", type=int, default=60, help="Check interval in seconds (default: 60)")
+    p_watch.set_defaults(func=cmd_watch)
+
     args = parser.parse_args()
 
     if not args.command:
         parser.print_help()
         sys.exit(0)
+
+    # Load RC config overrides before running any command
+    apply_rc_config()
 
     args.func(args)
 
