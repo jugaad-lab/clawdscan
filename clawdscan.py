@@ -32,7 +32,7 @@ try:
 except ImportError:
     _yaml = None
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 
@@ -1200,18 +1200,27 @@ def _scan_skills(skill_dirs):
                 m = fm.get("metadata", {})
                 if isinstance(m, dict):
                     meta = m.get("openclaw", {})
+            requires = meta.get("requires", {}) if meta else {}
             skill = {
                 "name": skill_name,
                 "path": os.path.dirname(skill_path),
+                "skill_md_path": skill_path,
                 "source": source,
                 "description": fm.get("description", "") if fm else "",
                 "os_req": meta.get("os", []),
-                "required_bins": meta.get("requires", {}).get("bins", []) if meta else [],
+                "required_bins": requires.get("bins", []),
+                "optional_bins": requires.get("optional_bins", []),
+                "bin_versions": requires.get("bin_versions", {}),
                 "install_info": meta.get("install", []) if meta else [],
                 "bins_status": {},
+                "optional_bins_status": {},
+                "version_issues": [],
                 "os_ok": True,
                 "healthy": True,
+                "warnings": [],
                 "issues": [],
+                "inferred_bins": [],
+                "inferred_bins_status": {},
             }
             if skill["os_req"]:
                 os_map = {"darwin": "darwin", "linux": "linux", "win32": "windows"}
@@ -1225,8 +1234,84 @@ def _scan_skills(skill_dirs):
                 if not found:
                     skill["healthy"] = False
                     skill["issues"].append(f"Missing binary: {bin_name}")
+            for bin_name in skill["optional_bins"]:
+                found = shutil.which(bin_name) is not None
+                skill["optional_bins_status"][bin_name] = found
+                if not found:
+                    skill["warnings"].append(f"Optional missing: {bin_name}")
             skills.append(skill)
     return skills
+
+
+def _infer_deps_from_body(skill_md_path):
+    """Scan SKILL.md body text for CLI tool references when no deps are declared."""
+    try:
+        with open(skill_md_path) as f:
+            content = f.read()
+    except Exception:
+        return []
+    # Strip frontmatter
+    if content.startswith("---"):
+        end = content.find("---", 3)
+        if end != -1:
+            content = content[end + 3:]
+    inferred = set()
+    # Pattern: "requires `tool`", "uses `tool`", "install `tool`", "needs `tool`",
+    # "depends on `tool`", "`tool` must be installed"
+    for m in re.finditer(r'(?:requires|uses|install|needs|depends\s+on)\s+`([a-zA-Z0-9_-]+)`', content, re.IGNORECASE):
+        inferred.add(m.group(1))
+    for m in re.finditer(r'`([a-zA-Z0-9_-]+)`\s+must\s+be\s+installed', content, re.IGNORECASE):
+        inferred.add(m.group(1))
+    # Code block patterns: brew install X, npm install -g X, pip install X, apt install X
+    for m in re.finditer(r'(?:brew|apt|apt-get)\s+install\s+(?:-\S+\s+)*([a-zA-Z0-9_-]+)', content):
+        inferred.add(m.group(1))
+    for m in re.finditer(r'npm\s+install\s+(?:-g\s+)?([a-zA-Z0-9_@/-]+)', content):
+        pkg = m.group(1).split("/")[-1]  # handle scoped packages
+        inferred.add(pkg)
+    for m in re.finditer(r'pip\s+install\s+([a-zA-Z0-9_-]+)', content):
+        inferred.add(m.group(1))
+    # Filter out common non-tool words
+    noise = {"the", "a", "an", "and", "or", "for", "to", "in", "on", "it", "is", "be", "this", "that"}
+    return sorted(inferred - noise)
+
+
+def _check_bin_version(bin_name, version_spec):
+    """Run `tool --version` and compare against a minimum version spec like '>=6.0'."""
+    try:
+        result = subprocess.run(
+            [bin_name, "--version"], capture_output=True, text=True, timeout=5
+        )
+        output = result.stdout.strip() or result.stderr.strip()
+    except Exception:
+        return None, "could not run --version"
+    # Parse version from output
+    ver_match = re.search(r'(\d+(?:\.\d+)+)', output)
+    if not ver_match:
+        return None, f"could not parse version from: {output[:80]}"
+    actual_ver = ver_match.group(1)
+    # Parse spec
+    spec_match = re.match(r'(>=|>|==|<=|<)\s*(.+)', version_spec.strip())
+    if not spec_match:
+        return actual_ver, f"invalid version spec: {version_spec}"
+    op, required_ver = spec_match.group(1), spec_match.group(2)
+    # Compare versions
+    actual_parts = [int(x) for x in actual_ver.split(".")]
+    required_parts = [int(x) for x in required_ver.split(".")]
+    # Pad to same length
+    max_len = max(len(actual_parts), len(required_parts))
+    actual_parts.extend([0] * (max_len - len(actual_parts)))
+    required_parts.extend([0] * (max_len - len(required_parts)))
+    if op == ">=" and actual_parts >= required_parts:
+        return actual_ver, None
+    elif op == ">" and actual_parts > required_parts:
+        return actual_ver, None
+    elif op == "==" and actual_parts == required_parts:
+        return actual_ver, None
+    elif op == "<=" and actual_parts <= required_parts:
+        return actual_ver, None
+    elif op == "<" and actual_parts < required_parts:
+        return actual_ver, None
+    return actual_ver, f"have {actual_ver}, need {version_spec}"
 
 
 def _skill_install_hint(skill):
@@ -1250,6 +1335,30 @@ def cmd_skills(args):
     """Skill dependency health check."""
     skill_dirs = _get_skill_dirs(extra_dirs=getattr(args, 'dirs', None))
     skills = _scan_skills(skill_dirs)
+    do_infer = getattr(args, 'infer', False)
+    do_versions = getattr(args, 'check_versions', False)
+
+    # Inference pass: scan SKILL.md body for deps when none declared
+    if do_infer:
+        for s in skills:
+            if not s["required_bins"] and not s["optional_bins"]:
+                inferred = _infer_deps_from_body(s["skill_md_path"])
+                s["inferred_bins"] = inferred
+                for bin_name in inferred:
+                    found = shutil.which(bin_name) is not None
+                    s["inferred_bins_status"][bin_name] = found
+                    if not found:
+                        s["warnings"].append(f"Inferred missing: {bin_name}")
+
+    # Version check pass
+    if do_versions:
+        for s in skills:
+            for bin_name, spec in s.get("bin_versions", {}).items():
+                if shutil.which(bin_name):
+                    actual, err = _check_bin_version(bin_name, spec)
+                    if err:
+                        s["version_issues"].append(f"{bin_name}: {err}")
+                        s["warnings"].append(f"Version mismatch: {bin_name} ({err})")
 
     if getattr(args, 'skill', None):
         skills = [s for s in skills if s["name"] == args.skill]
@@ -1257,10 +1366,40 @@ def cmd_skills(args):
             print(f"Skill '{args.skill}' not found")
             sys.exit(1)
 
+    # Apply filter
+    filt = getattr(args, 'filter', None)
+    if filt == "broken":
+        skills = [s for s in skills if not s["healthy"]]
+    elif filt == "healthy":
+        skills = [s for s in skills if s["healthy"]]
+
     healthy = [s for s in skills if s["healthy"]]
     broken = [s for s in skills if not s["healthy"]]
-    no_deps = [s for s in skills if not s["required_bins"] and not s["os_req"]]
+    no_deps = [s for s in skills if not s["required_bins"] and not s["os_req"] and not s["inferred_bins"]]
+    with_warnings = [s for s in skills if s["warnings"]]
 
+    # Fix-hints mode: just print install commands
+    if getattr(args, 'fix_hints', False):
+        any_hints = False
+        for s in [sk for sk in skills if not sk["healthy"]]:
+            hints = _skill_install_hint(s)
+            if hints:
+                print(f"# {s['name']}")
+                for h in hints:
+                    print(h)
+                print()
+                any_hints = True
+            else:
+                missing = [b for b, ok in s["bins_status"].items() if not ok]
+                if missing:
+                    print(f"# {s['name']} — no install info, missing: {', '.join(missing)}")
+                    print()
+                    any_hints = True
+        if not any_hints:
+            print("All skills healthy! Nothing to fix.")
+        return
+
+    # JSON output
     if getattr(args, 'json_out', None):
         target = sys.stdout if args.json_out == "-" else open(args.json_out, "w")
         json.dump(skills, target, indent=2)
@@ -1273,6 +1412,8 @@ def cmd_skills(args):
     print(f"📦 Total skills scanned: {len(skills)}")
     print(f"✅ Healthy: {len(healthy)}")
     print(f"❌ Broken:  {len(broken)}")
+    if with_warnings:
+        print(f"⚠️  Warnings: {len(with_warnings)}")
     print(f"📝 No deps declared: {len(no_deps)}")
     print(f"📂 Directories: {', '.join(skill_dirs)}")
     print()
@@ -1288,6 +1429,33 @@ def cmd_skills(args):
             for h in hints:
                 print(f"     💡 Fix: {h}")
         print()
+
+    if with_warnings:
+        print(f"⚠️  SKILLS WITH WARNINGS ({len(with_warnings)})")
+        print(f"{'-'*60}")
+        for s in with_warnings:
+            if s in broken:
+                continue  # already shown above
+            print(f"\n  🟡 {s['name']} ({s['source']})")
+            for w in s["warnings"]:
+                print(f"     ⚠️  {w}")
+        print()
+
+    if do_infer:
+        inferred_skills = [s for s in skills if s["inferred_bins"]]
+        if inferred_skills:
+            print(f"🔍 INFERRED DEPENDENCIES ({len(inferred_skills)} skills)")
+            print(f"{'-'*60}")
+            for s in inferred_skills:
+                found = [b for b, ok in s["inferred_bins_status"].items() if ok]
+                missing = [b for b, ok in s["inferred_bins_status"].items() if not ok]
+                status_parts = []
+                if found:
+                    status_parts.append(f"✅ {', '.join(found)}")
+                if missing:
+                    status_parts.append(f"❌ {', '.join(missing)}")
+                print(f"  {s['name']}: {' | '.join(status_parts)}")
+            print()
 
     if getattr(args, 'verbose', False):
         print(f"✅ HEALTHY SKILLS ({len(healthy)})")
@@ -1395,6 +1563,10 @@ Examples:
     p_skills.add_argument("--skill", help="Check a specific skill by name")
     p_skills.add_argument("--json", metavar="FILE", dest="json_out", help="Export as JSON (use - for stdout)")
     p_skills.add_argument("--verbose", action="store_true", help="Show healthy skills too")
+    p_skills.add_argument("--fix-hints", action="store_true", help="Show only install commands for broken skills")
+    p_skills.add_argument("--filter", choices=["broken", "healthy"], help="Filter by status")
+    p_skills.add_argument("--infer", action="store_true", help="Infer deps from SKILL.md body text")
+    p_skills.add_argument("--check-versions", action="store_true", help="Check binary versions against requirements")
     p_skills.set_defaults(func=cmd_skills)
 
     # watch
