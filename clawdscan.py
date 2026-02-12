@@ -1263,16 +1263,46 @@ def _infer_deps_from_body(skill_md_path):
     for m in re.finditer(r'`([a-zA-Z0-9_-]+)`\s+must\s+be\s+installed', content, re.IGNORECASE):
         inferred.add(m.group(1))
     # Code block patterns: brew install X, npm install -g X, pip install X, apt install X
-    for m in re.finditer(r'(?:brew|apt|apt-get)\s+install\s+(?:-\S+\s+)*([a-zA-Z0-9_-]+)', content):
-        inferred.add(m.group(1))
+    # Skip brew tap patterns like "steipete/tap/camsnap" — only take the last segment
+    for m in re.finditer(r'(?:brew|apt|apt-get)\s+install\s+(?:-\S+\s+)*([a-zA-Z0-9_/-]+)', content):
+        pkg = m.group(1).split("/")[-1]  # handle tap paths like user/tap/formula
+        inferred.add(pkg)
     for m in re.finditer(r'npm\s+install\s+(?:-g\s+)?([a-zA-Z0-9_@/-]+)', content):
         pkg = m.group(1).split("/")[-1]  # handle scoped packages
         inferred.add(pkg)
     for m in re.finditer(r'pip\s+install\s+([a-zA-Z0-9_-]+)', content):
         inferred.add(m.group(1))
-    # Filter out common non-tool words
-    noise = {"the", "a", "an", "and", "or", "for", "to", "in", "on", "it", "is", "be", "this", "that"}
-    return sorted(inferred - noise)
+    # Filter out common non-tool words and false positives
+    noise = {"the", "a", "an", "and", "or", "for", "to", "in", "on", "it", "is", "be", "this", "that",
+             "your", "you", "with", "from", "not", "can", "will", "all", "use", "run", "set", "get",
+             "add", "new", "see", "e", "g", "i", "s", "t", "v", "commands", "export", "requests",
+             "install", "update", "config", "setup", "build", "test", "check", "start", "stop",
+             "init", "create", "delete", "list", "show", "help", "version", "status", "enable",
+             "disable", "reset", "clean", "clear", "remove", "search", "find", "open", "close",
+             "file", "path", "name", "key", "value", "type", "mode", "level", "output", "input",
+             "server", "client", "source", "target", "local", "remote", "global", "default"}
+    filtered = set()
+    for item in inferred - noise:
+        # Skip ALL_CAPS (env vars like GOOGLE_PLACES_API_KEY)
+        if item.isupper() and len(item) > 1:
+            continue
+        # Skip items starting with - (flags like -e, -g)
+        if item.startswith("-"):
+            continue
+        # Skip date-like patterns (2025-09-03)
+        if re.match(r'^\d{4}(-\d{2}){0,2}$', item):
+            continue
+        # Skip pure numbers
+        if item.isdigit():
+            continue
+        # Skip very short items (likely noise)
+        if len(item) <= 1:
+            continue
+        # Skip items with underscores (likely env vars or internal names)
+        if "_" in item and item == item.upper():
+            continue
+        filtered.add(item)
+    return sorted(filtered)
 
 
 def _check_bin_version(bin_name, version_spec):
