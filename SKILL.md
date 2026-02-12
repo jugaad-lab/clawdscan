@@ -1,5 +1,6 @@
 ---
 name: clawdscan
+version: 0.3.0
 description: "Diagnose Clawdbot/OpenClaw health — session bloat, zombies, stale files, AND skill dependency validation. Zero dependencies, single Python file."
 user-invocable: true
 metadata:
