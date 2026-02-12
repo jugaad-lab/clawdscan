@@ -14,14 +14,23 @@ Addresses: https://github.com/clawdbot/clawdbot/issues/1808
 """
 
 import argparse
+import glob
 import json
 import os
+import platform
+import re
+import subprocess
 import sys
 import shutil
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
+
+try:
+    import yaml as _yaml
+except ImportError:
+    _yaml = None
 
 __version__ = "0.2.0"
 
@@ -1079,6 +1088,216 @@ def parse_size(s: str) -> int:
     return int(s)
 
 
+# ─── Skill Health Check ──────────────────────────────────────────────────────
+
+DEFAULT_SKILL_DIRS = [
+    os.path.expanduser("/opt/homebrew/lib/node_modules/openclaw/skills"),
+    os.path.expanduser("~/workspace/skills"),
+]
+
+
+def _get_skill_dirs(extra_dirs=None):
+    """Build skill directory list from OpenClaw config + defaults + extra dirs."""
+    dirs = list(DEFAULT_SKILL_DIRS)
+    for config_path in [
+        os.path.expanduser("~/.openclaw/openclaw.json"),
+        os.path.expanduser("~/.clawdbot/clawdbot.json"),
+    ]:
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+            agents_cfg = config.get("agents", {}).get("defaults", {})
+            skill_dirs_cfg = agents_cfg.get("skillDirs", [])
+            if isinstance(skill_dirs_cfg, list):
+                dirs.extend([os.path.expanduser(p) for p in skill_dirs_cfg])
+            elif isinstance(skill_dirs_cfg, str):
+                dirs.append(os.path.expanduser(skill_dirs_cfg))
+            skills_cfg = config.get("skills", {})
+            if isinstance(skills_cfg, dict):
+                for key in ("dirs", "paths", "directories"):
+                    paths = skills_cfg.get(key, [])
+                    if isinstance(paths, list):
+                        dirs.extend([os.path.expanduser(p) for p in paths])
+                    elif isinstance(paths, str):
+                        dirs.append(os.path.expanduser(paths))
+            break
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            continue
+    if extra_dirs:
+        dirs.extend([os.path.expanduser(d) for d in extra_dirs])
+    seen = set()
+    unique = []
+    for d in dirs:
+        real = os.path.realpath(d)
+        if real not in seen:
+            seen.add(real)
+            unique.append(d)
+    return unique
+
+
+def _parse_skill_frontmatter(path):
+    """Extract YAML frontmatter from SKILL.md."""
+    try:
+        with open(path) as f:
+            content = f.read()
+    except Exception:
+        return None
+    if not content.startswith("---"):
+        return None
+    end = content.find("---", 3)
+    if end == -1:
+        return None
+    fm_text = content[3:end].strip()
+    try:
+        if _yaml:
+            return _yaml.safe_load(fm_text)
+        return _parse_simple_fm(fm_text)
+    except Exception:
+        return _parse_simple_fm(fm_text)
+
+
+def _parse_simple_fm(text):
+    """Minimal frontmatter parser without PyYAML."""
+    result = {}
+    for line in text.split("\n"):
+        m = re.match(r'^(\w[\w-]*)\s*:\s*(.+)$', line)
+        if m:
+            key, val = m.group(1), m.group(2).strip()
+            if val.startswith('"') and val.endswith('"'):
+                val = val[1:-1]
+            result[key] = val
+    json_match = re.search(r'"openclaw"\s*:\s*(\{[^}]*(?:\{[^}]*\}[^}]*)*\})', text)
+    if json_match:
+        try:
+            oc = json.loads(json_match.group(1))
+            if "metadata" not in result or not isinstance(result.get("metadata"), dict):
+                result["metadata"] = {}
+            result["metadata"]["openclaw"] = oc
+        except json.JSONDecodeError:
+            pass
+    meta_match = re.search(r'metadata\s*:\s*\n\s*(\{[\s\S]*?\})\s*\n---', text + "\n---")
+    if meta_match and not isinstance(result.get("metadata"), dict):
+        try:
+            result["metadata"] = json.loads(meta_match.group(1))
+        except json.JSONDecodeError:
+            pass
+    return result if result else None
+
+
+def _scan_skills(skill_dirs):
+    """Scan skill directories and return skill info list."""
+    skills = []
+    current_os = platform.system().lower()
+    for skill_dir in skill_dirs:
+        if not os.path.isdir(skill_dir):
+            continue
+        for skill_path in sorted(glob.glob(os.path.join(skill_dir, "*/SKILL.md"))):
+            skill_name = os.path.basename(os.path.dirname(skill_path))
+            source = "builtin" if "node_modules" in skill_path else "custom"
+            fm = _parse_skill_frontmatter(skill_path)
+            meta = {}
+            if fm and isinstance(fm, dict):
+                m = fm.get("metadata", {})
+                if isinstance(m, dict):
+                    meta = m.get("openclaw", {})
+            skill = {
+                "name": skill_name,
+                "path": os.path.dirname(skill_path),
+                "source": source,
+                "description": fm.get("description", "") if fm else "",
+                "os_req": meta.get("os", []),
+                "required_bins": meta.get("requires", {}).get("bins", []) if meta else [],
+                "install_info": meta.get("install", []) if meta else [],
+                "bins_status": {},
+                "os_ok": True,
+                "healthy": True,
+                "issues": [],
+            }
+            if skill["os_req"]:
+                os_map = {"darwin": "darwin", "linux": "linux", "win32": "windows"}
+                if current_os not in [os_map.get(o, o) for o in skill["os_req"]]:
+                    skill["os_ok"] = False
+                    skill["healthy"] = False
+                    skill["issues"].append(f"OS mismatch: needs {skill['os_req']}, have {current_os}")
+            for bin_name in skill["required_bins"]:
+                found = shutil.which(bin_name) is not None
+                skill["bins_status"][bin_name] = found
+                if not found:
+                    skill["healthy"] = False
+                    skill["issues"].append(f"Missing binary: {bin_name}")
+            skills.append(skill)
+    return skills
+
+
+def _skill_install_hint(skill):
+    """Get install hints for a broken skill."""
+    hints = []
+    for inst in skill.get("install_info", []):
+        if isinstance(inst, dict):
+            kind = inst.get("kind", "")
+            if kind == "brew":
+                hints.append(f"brew install {inst.get('formula', '')}")
+            elif kind == "npm":
+                hints.append(f"npm install -g {inst.get('package', '')}")
+            elif kind == "pip":
+                hints.append(f"pip install {inst.get('package', '')}")
+            elif kind == "shell":
+                hints.append(inst.get("cmd", ""))
+    return [h for h in hints if h.strip()]
+
+
+def cmd_skills(args):
+    """Skill dependency health check."""
+    skill_dirs = _get_skill_dirs(extra_dirs=getattr(args, 'dirs', None))
+    skills = _scan_skills(skill_dirs)
+
+    if getattr(args, 'skill', None):
+        skills = [s for s in skills if s["name"] == args.skill]
+        if not skills:
+            print(f"Skill '{args.skill}' not found")
+            sys.exit(1)
+
+    healthy = [s for s in skills if s["healthy"]]
+    broken = [s for s in skills if not s["healthy"]]
+    no_deps = [s for s in skills if not s["required_bins"] and not s["os_req"]]
+
+    if getattr(args, 'json_out', None):
+        target = sys.stdout if args.json_out == "-" else open(args.json_out, "w")
+        json.dump(skills, target, indent=2)
+        if args.json_out == "-":
+            print()
+        return
+
+    print(f"\n🩺 Skill Health Report")
+    print(f"{'='*60}")
+    print(f"📦 Total skills scanned: {len(skills)}")
+    print(f"✅ Healthy: {len(healthy)}")
+    print(f"❌ Broken:  {len(broken)}")
+    print(f"📝 No deps declared: {len(no_deps)}")
+    print(f"📂 Directories: {', '.join(skill_dirs)}")
+    print()
+
+    if broken:
+        print(f"❌ BROKEN SKILLS ({len(broken)})")
+        print(f"{'-'*60}")
+        for s in broken:
+            print(f"\n  🔴 {s['name']} ({s['source']})")
+            for issue in s["issues"]:
+                print(f"     ⚠️  {issue}")
+            hints = _skill_install_hint(s)
+            for h in hints:
+                print(f"     💡 Fix: {h}")
+        print()
+
+    if getattr(args, 'verbose', False):
+        print(f"✅ HEALTHY SKILLS ({len(healthy)})")
+        print(f"{'-'*60}")
+        for s in healthy:
+            bins = ", ".join(s["required_bins"]) if s["required_bins"] else "none"
+            print(f"  🟢 {s['name']} ({s['source']}) — bins: {bins}")
+        print()
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1169,6 +1388,14 @@ Examples:
     p_history.add_argument("--dir", **dir_kwargs)
     p_history.add_argument("--days", type=int, default=30, help="Number of days of history (default: 30)")
     p_history.set_defaults(func=cmd_history)
+
+    # skills
+    p_skills = subparsers.add_parser("skills", help="Skill dependency health check")
+    p_skills.add_argument("--dirs", nargs="+", metavar="DIR", help="Additional skill directories to scan")
+    p_skills.add_argument("--skill", help="Check a specific skill by name")
+    p_skills.add_argument("--json", metavar="FILE", dest="json_out", help="Export as JSON (use - for stdout)")
+    p_skills.add_argument("--verbose", action="store_true", help="Show healthy skills too")
+    p_skills.set_defaults(func=cmd_skills)
 
     # watch
     p_watch = subparsers.add_parser("watch", help="Watch sessions and alert on threshold crossings")
