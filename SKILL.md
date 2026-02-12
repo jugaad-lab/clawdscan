@@ -1,6 +1,6 @@
 ---
 name: clawdscan
-description: "Diagnose Clawdbot/OpenClaw session health — find bloated sessions, zombies, stale files, and reclaim disk space. Zero dependencies, single Python file."
+description: "Diagnose Clawdbot/OpenClaw health — session bloat, zombies, stale files, AND skill dependency validation. Zero dependencies, single Python file."
 user-invocable: true
 metadata:
   openclaw:
