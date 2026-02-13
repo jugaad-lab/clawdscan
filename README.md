@@ -7,6 +7,8 @@
 
 # ClawdScan - Clawdbot Session Health Analyzer 🔍
 
+> ⭐ **Found this useful? [Star this repo](https://github.com/jugaad-lab/clawdscan)** to help others discover it!
+
 A comprehensive diagnostic tool for Clawdbot sessions. Analyze JSONL session files to identify performance issues, bloated sessions, zombie processes, and get actionable cleanup recommendations.
 
 ## Features
@@ -182,6 +184,12 @@ if len(data['bloated_sessions']) > 5:
 ## Addresses
 
 This tool addresses [GitHub Issue #1808](https://github.com/clawdbot/clawdbot/issues/1808) - Clawdbot session bloat and disk usage management.
+
+## 🤝 Contributing
+
+Found a bug? Have an idea? [Open an issue](https://github.com/jugaad-lab/clawdscan/issues) or submit a PR!
+
+If this tool saved you time, please ⭐ **star this repo** — it helps others find it.
 
 ## License
 
