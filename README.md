@@ -5,6 +5,8 @@
 <p align="center">[![ClawHub](https://img.shields.io/badge/ClawHub-clawdscan-teal)](https://clawhub.ai/skills/clawdscan)</p>
 <p align="center">**Install via ClawHub:** `clawhub install clawdscan`</p>
 
+> ⭐ **Found this useful? [Star this repo](https://github.com/jugaad-lab/clawdscan)** to help others discover it!
+
 # ClawdScan - Clawdbot Session Health Analyzer 🔍
 
 > ⭐ **Found this useful? [Star this repo](https://github.com/jugaad-lab/clawdscan)** to help others discover it!
