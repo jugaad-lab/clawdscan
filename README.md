@@ -2,7 +2,12 @@
   <img src="assets/logo.png" alt="clawdscan logo" width="200" />
 </p>
 
-<p align="center">[![ClawHub](https://img.shields.io/badge/ClawHub-clawdscan-teal)](https://clawhub.ai/skills/clawdscan)</p>
+<p align="center">
+[![ClawHub](https://img.shields.io/badge/ClawHub-clawdscan-teal)](https://clawhub.ai/skills/clawdscan)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub Repo stars](https://img.shields.io/github/stars/jugaad-lab/clawdscan?style=social)](https://github.com/jugaad-lab/clawdscan/stargazers)
+</p>
+
 <p align="center">**Install via ClawHub:** `clawhub install clawdscan`</p>
 
 > ⭐ **Found this useful? [Star this repo](https://github.com/jugaad-lab/clawdscan)** to help others discover it!
@@ -12,6 +17,8 @@
 > ⭐ **Found this useful? [Star this repo](https://github.com/jugaad-lab/clawdscan)** to help others discover it!
 
 A comprehensive diagnostic tool for Clawdbot sessions. Analyze JSONL session files to identify performance issues, bloated sessions, zombie processes, and get actionable cleanup recommendations.
+
+> 📌 **If you find this useful, please ⭐ star this repo!** It helps other developers discover session health tools.
 
 ## Features
 
@@ -202,6 +209,21 @@ MIT License - see [LICENSE](LICENSE) for details.
 - 📖 Documentation: [SKILL.md](SKILL.md)
 - 🐛 Issues: [GitHub Issues](https://github.com/yajatns/clawdscan/issues)  
 - 💬 Community: Clawdbot Discord server
+
+---
+## More from Jugaad Lab 🔧
+| Tool | What it does |
+|------|-------------|
+| [claude-code-mastery](https://github.com/jugaad-lab/claude-code-mastery) | Master Claude Code with subagents & automation |
+| [tokenmeter](https://github.com/jugaad-lab/tokenmeter) | Track AI token usage & costs locally |
+| [clawguard](https://github.com/jugaad-lab/clawguard) | Security blacklist for AI agents |
+| [clawdscan](https://github.com/jugaad-lab/clawdscan) | Session health analyzer for OpenClaw |
+| [skilldoc](https://github.com/jugaad-lab/skilldoc) | Skill health checker for OpenClaw |
+| [tribe-protocol](https://github.com/jugaad-lab/tribe-protocol) | Trust & access control for AI bots |
+| [discord-voice-plugin](https://github.com/jugaad-lab/discord-voice-plugin) | Voice conversations with AI in Discord |
+| [worldmonitor](https://github.com/jugaad-lab/worldmonitor) | Real-time global intelligence dashboard |
+
+⭐ **Found these useful? Star the repos you like!**
 
 ---
 
